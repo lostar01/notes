@@ -1,0 +1,184 @@
+##Spinnaker all
+
+docker run -d -p 8084:8084 -p 9000:9000 \
+--name halyard \
+--cpus 2 \
+--memory 1024Mi \
+-v ~/.hal:/home/spinnaker/.hal \
+-v ~/.kube:/home/spinnaker/.kube \
+lostar01/halyard:stable
+
+#启用ldap
+hal config security authn ldap edit \
+--user-search-base 'ou=devops,dc=zy,dc=com' \
+--url 'ldap://ldap-openldap.ldap.svc.cluster.local:389' \
+--user-search-filter 'cn={0}' \
+--manager-dn 'cn=admin,dc=zy,dc=com' \
+--manager-password '12345678'
+
+hal config security authn ldap enable
+
+#授权
+hal config security authz ldap edit \
+--url 'ldap://ldap-openldap.ldap.svc.cluster.local:389/dc=zy,dc=com' \
+--manager-dn 'cn=admin,dc=zy,dc=com' \
+--manager-password '12345678' \
+--user-dn-pattern 'cn={0}' \
+--group-search-base 'ou=devops' \
+--group-search-filter 'uniqueMember={0}' \
+--group-role-attributes 'cn' \
+--user-search-filter 'cn={0}'
+
+
+hal config security authz edit --type ldap
+hal config security authz enable
+
+
+配置权限
+hal config provider kubernetes account edit eks-spinnaker \
+--add-read-permission yunweizu \
+--add-write-permission yunweizu
+
+删除角色
+--remove-read-permission
+--remove-write-permission
+
+
+调试命令
+需要开启fiat 的ingress
+先执行：curl -X POST http://spin-fiat.idevops.site/roles/sync
+curl http://spin-fiat.idevops.site/authorize/userid
+
+
+
+CONTEXT=$(kubectl config current-context)
+TOKEN=$(kubectl get secret --context $CONTEXT \
+   $(kubectl get serviceaccount spinnaker-service-account \
+       --context $CONTEXT \
+       -n spinnaker \
+       -o jsonpath='{.secrets[0].name}') \
+   -n spinnaker \
+   -o jsonpath='{.data.token}' | base64 -d)
+
+kubectl config set-credentials ${CONTEXT}-token-user --token $TOKEN
+
+kubectl config set-context $CONTEXT --user ${CONTEXT}-token-user
+
+##配置管道权限
+~/.hal/default/profiles/orca-local.yml
+task:
+  useManagedServiceAccounts: true
+  
+~/.hal/default/profiles/settings-local.js
+window.spinnakerSettings.feature.managedServiceAccounts = true;
+
+
+
+#扩展-使用yaml 定义角色和用户
+~/.hal/default/profiles/fiat-local.yml
+fiat:
+  admin:
+    roles:
+	  - devops-admin
+	  
+	  
+#Role Providers 角色定义
+hal config security authz enable
+hal config security authz file edit --file-path=$HOME/userrole.yaml
+hal config authz edit --type file 
+
+~/userrole.yml
+users:
+  - username: devops
+    roles:
+	- yunweizu
+  - username: testuser
+    roles:
+	- ceshizu
+  - username: anonymous
+    roles: []
+	
+
+消息通知-邮件通知
+settings-local.js
+##Email
+window.spinnakerSettings.notifications.email.enabled = true;
+
+
+echo-local.yml
+mail:
+  enabled: true
+  from: 1724175482@qq.com
+spring:
+  mail:
+    host: smtp.qq.com
+    username: 1724175482@qq.com
+    password: jpeduqkqjzzhegef
+    port: 465
+    properties:
+      mail:
+        display:
+          sendname: SpinnakerAdmin
+        smtp:
+          auth: true
+          starttls:
+            enable: true
+            required: true
+          ssl:
+            enable: true
+        transport:
+          protocol: smtp
+        debug: true
+		
+		
+	
+# Jenkins 集成
+hal config ci jenkins enable
+
+## 配置Jenkins , 需要用到账号和密码
+hal config ci jenkins master add my-jenkins-master \
+--address http://jenkins.idevops.site \
+--add-read-permission yunweizu \
+--add-write-permission yunweizu \
+--username admin \
+--password admin@123
+
+
+
+
+## 启用csrf
+hal config ci jenkins master edit my-jenkins-master --csrf true
+
+
+ 
+##Jenkins 设置CSRF
+在Jenkins 中安装Strict Crumb Issuer 插件
+
+
+#canary 配置
+hal config canary enable
+
+hal config canary aws enable
+hal config canary aws account add my-canary \
+--bucket spinnaker-canary \
+--endpoint http://minio.idevops.site \
+--access-key-id AKIAIOSFODNN7EXAMPLE \
+--secret-access-key wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY 
+
+
+hal config canary edit --default-storage-account my-canary
+hal config canary aws edit --s3-enabled true
+
+#
+## prometheus
+
+hal config canary prometheus enable 
+
+# basic 认证， 无认证忽略username 和password 选项
+hal config canary prometheus account add my-prometheus \
+--base-url http://prometheus.idevops.site \
+--username admin \
+--password admin
+
+hal config canary edit --default-metrics-account my-prometheus
+hal config canary edit --default-metrics-store prometheus
